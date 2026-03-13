@@ -275,7 +275,7 @@ func init() {
 			}
 
 			// If running on a PR, post or update the comment(s), chunking as needed
-			if ghOK && strings.TrimSpace(finalMDPath) != "" {
+			if commentPR && ghOK && strings.TrimSpace(finalMDPath) != "" {
 				b, rerr := os.ReadFile(finalMDPath)
 				if rerr == nil {
 					full := string(b)
@@ -304,6 +304,7 @@ func init() {
 	checkCmd.Flags().StringVar(&repoBlobBase, "repo-blob-base", "", "override GitHub blob base URL (e.g. https://github.com/owner/repo/blob/<sha>)")
 	checkCmd.Flags().IntVar(&timeoutSeconds, "timeout", 10, "HTTP request timeout in seconds")
 	checkCmd.Flags().BoolVar(&failOnFailures, "fail-on-failures", true, "exit non-zero if any links fail")
+	checkCmd.Flags().BoolVar(&commentPR, "comment-pr", true, "post a PR comment with the report when running on a pull request")
 	checkCmd.Flags().BoolVar(&respectGitignore, "respect-gitignore", true, "respect .gitignore while scanning (default true)")
 
 	rootCmd.AddCommand(checkCmd)
@@ -312,6 +313,7 @@ func init() {
 var (
 	timeoutSeconds   int
 	failOnFailures   bool
+	commentPR        bool
 	repoBlobBase     string
 	respectGitignore bool
 )

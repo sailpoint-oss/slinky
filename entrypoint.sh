@@ -47,6 +47,12 @@ else
   set -- "$@" --fail-on-failures=false
 fi
 
+if [ "${INPUT_COMMENT_PR:-true}" = "true" ]; then
+  set -- "$@" --comment-pr=true
+else
+  set -- "$@" --comment-pr=false
+fi
+
 if [ "${INPUT_RESPECT_GITIGNORE:-true}" = "true" ]; then
   set -- "$@" --respect-gitignore=true
 else

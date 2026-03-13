@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,8 +50,9 @@ func CheckURLs(ctx context.Context, urls []string, sources map[string][]string, 
 	if concurrency <= 0 {
 		concurrency = 8
 	}
-	processed := 0
-	pending := len(unique)
+	var processed atomic.Int64
+	var pending atomic.Int64
+	pending.Store(int64(len(unique)))
 
 	worker := func() {
 		for j := range jobs {
@@ -87,11 +89,11 @@ func CheckURLs(ctx context.Context, urls []string, sources map[string][]string, 
 				return
 			}
 
-			processed++
-			pending--
+			p := processed.Add(1)
+			pn := pending.Add(-1)
 			if stats != nil {
 				select {
-				case stats <- Stats{Pending: pending, Processed: processed}:
+				case stats <- Stats{Pending: int(pn), Processed: int(p)}:
 				default:
 				}
 			}

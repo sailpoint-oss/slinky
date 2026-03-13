@@ -55,8 +55,7 @@ jobs:
             -v "$PWD:/repo" \
             -w /repo \
             -e GITHUB_STEP_SUMMARY="/tmp/summary.md" \
-            -e INPUT_PATH=. \
-            -e INPUT_PATTERNS="**/*" \
+            -e INPUT_TARGETS="**/*" \
             -e INPUT_CONCURRENCY=8 \
             -e INPUT_TIMEOUT=5 \
             -e INPUT_JSON_OUT=results.json \

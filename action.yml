@@ -31,12 +31,15 @@ inputs:
   fail_on_failures:
     description: "Fail the job if any links fail"
     required: false
+    default: "true"
   comment_pr:
     description: "If running on a PR, post a comment with the report"
     required: false
+    default: "true"
   step_summary:
     description: "Append the report to the GitHub Step Summary"
     required: false
+    default: "true"
 
 runs:
   using: "docker"
