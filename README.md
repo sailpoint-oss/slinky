@@ -1,6 +1,8 @@
 ## Slinky Link Checker
 
-Validate external links across your repository. Ships as a self-contained GitHub Action (Docker) and a CLI.
+**[sailpoint-oss/slinky](https://github.com/sailpoint-oss/slinky)** · Validate external links across your repository. Ships as a self-contained GitHub Action (Docker) and a CLI.
+
+Part of [SailPoint Open Source](https://github.com/sailpoint-oss).
 
 ### Quick start (GitHub Action)
 
@@ -20,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Slinky
-        uses: LukeHagar/slinky@v1
+        uses: sailpoint-oss/slinky@v1
         with:
           targets: "docs/,README.md,**/*.md"
 ```

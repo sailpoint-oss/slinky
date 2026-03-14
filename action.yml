@@ -1,6 +1,6 @@
 name: "Slinky - Guard against dead links"
 description: "Slink through your repository guarding against dead links"
-author: "LukasParke"
+author: "sailpoint-oss"
 branding:
   icon: "link"
   color: "blue"
@@ -43,7 +43,7 @@ inputs:
 
 runs:
   using: "docker"
-  image: "docker://ghcr.io/lukehagar/slinky:v1"
+  image: "docker://ghcr.io/sailpoint-oss/slinky:v1"
   args: []
   env:
     INPUT_TARGETS: ${{ inputs.targets }}
