@@ -1,6 +1,6 @@
-name: "Slinky Link Checker"
+name: "Slinky"
 description: "Slink through your repository looking for dead links"
-author: "LukeHagar"
+author: "LukasParke"
 branding:
   icon: "link"
   color: "blue"
@@ -62,5 +62,3 @@ outputs:
     description: "Path to JSON results file"
   md_path:
     description: "Path to Markdown report file"
-
-
