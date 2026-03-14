@@ -146,165 +146,16 @@ func shouldSkipDirectory(rel string, ignorePatterns []string) bool {
 // CollectURLsWithIgnoreConfig accepts all pre-loaded ignore configuration
 // to avoid reloading .gitignore and .slinkignore multiple times.
 func CollectURLsWithIgnoreConfig(rootPath string, globs []string, respectGitignore bool, gitIgnore *ignore.GitIgnore, slPathIgnore *ignore.GitIgnore, slURLPatterns []string) (map[string][]string, error) {
-	if strings.TrimSpace(rootPath) == "" {
-		rootPath = "."
-	}
-	cleanRoot := filepath.Clean(rootPath)
-
-	st, _ := os.Stat(cleanRoot)
-	isFileRoot := st != nil && !st.IsDir()
-
-	var ign *ignore.GitIgnore
-	if !isFileRoot && respectGitignore {
-		if gitIgnore != nil {
-			ign = gitIgnore
-		} else {
-			ign = LoadGitIgnore(cleanRoot)
-		}
-	}
-	// Load optional .slinkignore config if not provided
-	if slPathIgnore == nil {
-		slPathIgnore, slURLPatterns = LoadSlinkyIgnore(cleanRoot)
-	}
-
-	var patterns []string
-	for _, g := range globs {
-		g = strings.TrimSpace(g)
-		if g == "" {
-			continue
-		}
-		patterns = append(patterns, g)
-	}
-
-	shouldInclude := func(rel string) bool {
-		if len(patterns) == 0 {
-			return true
-		}
-		for _, p := range patterns {
-			ok, _ := doublestar.PathMatch(p, rel)
-			if ok {
-				return true
-			}
-		}
-		return false
-	}
-
-	urlToFiles := make(map[string]map[string]struct{})
-
-	// 2 MiB max file size to avoid huge/binary files
-	const maxSize = 2 * 1024 * 1024
-
-	// Walk the filesystem
-	walkFn := func(path string, d os.DirEntry, err error) error {
-		if isDebugEnv() {
-			fmt.Printf("::debug:: Walking path: %s\n", path)
-		}
-
-		if err != nil {
-			return nil
-		}
-
-		if (ign != nil && ign.MatchesPath(path)) || (slPathIgnore != nil && slPathIgnore.MatchesPath(path)) {
-			if isDebugEnv() {
-				fmt.Printf("::debug:: Ignoring path: %s\n", path)
-			}
-			return nil
-		}
-
-		rel, rerr := filepath.Rel(cleanRoot, path)
-		if rerr != nil {
-			rel = path
-		}
-		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
-			base := filepath.Base(path)
-			if base == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Always skip any .slinkignore file from scanning
-		if filepath.Base(path) == ".slinkignore" || rel == ".slinkignore" || strings.HasSuffix(rel, "/.slinkignore") {
-			return nil
-		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			return nil
-		}
-		if info.Size() > maxSize {
-			return nil
-		}
-		if isFileRoot && rel == "." {
-			rel = filepath.ToSlash(filepath.Base(path))
-		}
-		if !shouldInclude(rel) {
-			return nil
-		}
-
-		f, ferr := os.Open(path)
-		if ferr != nil {
-			return nil
-		}
-		defer f.Close()
-		br := bufio.NewReader(f)
-		// Read up to maxSize bytes
-		var b strings.Builder
-		read := int64(0)
-		for {
-			chunk, cerr := br.ReadString('\n')
-			b.WriteString(chunk)
-			read += int64(len(chunk))
-			if cerr == io.EOF || read > maxSize {
-				break
-			}
-			if cerr != nil {
-				break
-			}
-		}
-		content := b.String()
-		// Skip if likely binary (NUL present)
-		if strings.IndexByte(content, '\x00') >= 0 {
-			return nil
-		}
-
-		matches := extractCandidateMatches(content)
-		if len(matches) == 0 {
-			return nil
-		}
-		for _, m := range matches {
-			u := sanitizeURLToken(m.URL)
-			if u == "" {
-				continue
-			}
-			if isURLIgnored(u, slURLPatterns) {
-				continue
-			}
-			line, col := computeLineCol(content, m.Offset)
-			source := fmt.Sprintf("%s|%d|%d", rel, line, col)
-			fileSet, ok := urlToFiles[u]
-			if !ok {
-				fileSet = make(map[string]struct{})
-				urlToFiles[u] = fileSet
-			}
-			fileSet[source] = struct{}{}
-		}
-		return nil
-	}
-
-	_ = filepath.WalkDir(cleanRoot, walkFn)
-
-	// Convert to sorted slices
-	result := make(map[string][]string, len(urlToFiles))
-	for u, files := range urlToFiles {
-		var list []string
-		for fp := range files {
-			list = append(list, fp)
-		}
-		sort.Strings(list)
-		result[u] = list
-	}
-	return result, nil
+	return collectURLsCore(collectOptions{
+		rootPath:                rootPath,
+		globs:                   globs,
+		respectGitignore:        respectGitignore,
+		gitIgnore:               gitIgnore,
+		slPathIgnore:            slPathIgnore,
+		slURLPatterns:           slURLPatterns,
+		relativeFromWD:          false,
+		ignoreMatcherUsesRelPath: false,
+	})
 }
 
 // CollectURLsProgress is like CollectURLs but invokes onFile(relPath) for each included file.
@@ -321,6 +172,33 @@ func CollectURLsProgressWithIgnore(rootPath string, globs []string, respectGitig
 // CollectURLsProgressWithIgnoreConfig accepts all pre-loaded ignore configuration
 // to avoid reloading .gitignore and .slinkignore multiple times.
 func CollectURLsProgressWithIgnoreConfig(rootPath string, globs []string, respectGitignore bool, onFile func(string), gitIgnore *ignore.GitIgnore, slPathIgnore *ignore.GitIgnore, slURLPatterns []string) (map[string][]string, error) {
+	return collectURLsCore(collectOptions{
+		rootPath:                rootPath,
+		globs:                   globs,
+		respectGitignore:        respectGitignore,
+		gitIgnore:               gitIgnore,
+		slPathIgnore:            slPathIgnore,
+		slURLPatterns:           slURLPatterns,
+		onFile:                  onFile,
+		relativeFromWD:          true,
+		ignoreMatcherUsesRelPath: true,
+	})
+}
+
+type collectOptions struct {
+	rootPath                 string
+	globs                    []string
+	respectGitignore         bool
+	gitIgnore                *ignore.GitIgnore
+	slPathIgnore             *ignore.GitIgnore
+	slURLPatterns            []string
+	onFile                   func(string)
+	relativeFromWD           bool
+	ignoreMatcherUsesRelPath bool
+}
+
+func collectURLsCore(opts collectOptions) (map[string][]string, error) {
+	rootPath := opts.rootPath
 	if strings.TrimSpace(rootPath) == "" {
 		rootPath = "."
 	}
@@ -330,20 +208,22 @@ func CollectURLsProgressWithIgnoreConfig(rootPath string, globs []string, respec
 	isFileRoot := st != nil && !st.IsDir()
 
 	var ign *ignore.GitIgnore
-	if !isFileRoot && respectGitignore {
-		if gitIgnore != nil {
-			ign = gitIgnore
+	if !isFileRoot && opts.respectGitignore {
+		if opts.gitIgnore != nil {
+			ign = opts.gitIgnore
 		} else {
 			ign = LoadGitIgnore(cleanRoot)
 		}
 	}
 	// Load optional .slinkignore config if not provided
+	slPathIgnore := opts.slPathIgnore
+	slURLPatterns := opts.slURLPatterns
 	if slPathIgnore == nil {
 		slPathIgnore, slURLPatterns = LoadSlinkyIgnore(cleanRoot)
 	}
 
 	var patterns []string
-	for _, g := range globs {
+	for _, g := range opts.globs {
 		g = strings.TrimSpace(g)
 		if g == "" {
 			continue
@@ -377,13 +257,18 @@ func CollectURLsProgressWithIgnoreConfig(rootPath string, globs []string, respec
 		if err != nil {
 			return nil
 		}
-		// Compute relative path from current working directory, not from cleanRoot
-		// This ensures file paths in the report are relative to where the command was run
-		wd, wderr := os.Getwd()
-		if wderr != nil {
-			wd = "."
+		var relBase string
+		if opts.relativeFromWD {
+			// This keeps TUI/report paths relative to where command is run.
+			wd, wderr := os.Getwd()
+			if wderr != nil {
+				wd = "."
+			}
+			relBase = wd
+		} else {
+			relBase = cleanRoot
 		}
-		rel, rerr := filepath.Rel(wd, path)
+		rel, rerr := filepath.Rel(relBase, path)
 		if rerr != nil {
 			rel = path
 		}
@@ -399,7 +284,11 @@ func CollectURLsProgressWithIgnoreConfig(rootPath string, globs []string, respec
 		if filepath.Base(path) == ".slinkignore" || rel == ".slinkignore" || strings.HasSuffix(rel, "/.slinkignore") {
 			return nil
 		}
-		if (ign != nil && ign.MatchesPath(rel)) || (slPathIgnore != nil && slPathIgnore.MatchesPath(rel)) {
+		ignoreTarget := path
+		if opts.ignoreMatcherUsesRelPath {
+			ignoreTarget = rel
+		}
+		if (ign != nil && ign.MatchesPath(ignoreTarget)) || (slPathIgnore != nil && slPathIgnore.MatchesPath(ignoreTarget)) {
 			if isDebugEnv() {
 				fmt.Printf("::debug:: Ignoring file: %s\n", rel)
 			}
@@ -419,8 +308,8 @@ func CollectURLsProgressWithIgnoreConfig(rootPath string, globs []string, respec
 			return nil
 		}
 
-		if onFile != nil {
-			onFile(rel)
+		if opts.onFile != nil {
+			opts.onFile(rel)
 		}
 
 		f, ferr := os.Open(path)
@@ -654,12 +543,21 @@ func computeLineCol(content string, offset int) (int, int) {
 // extractCandidateMatches finds URL-like tokens with their offsets for line/col mapping
 func extractCandidateMatches(content string) []matchCandidate {
 	var out []matchCandidate
+	seen := make(map[string]struct{})
+	appendUnique := func(url string, offset int) {
+		key := fmt.Sprintf("%d|%s", offset, url)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, matchCandidate{URL: url, Offset: offset})
+	}
 	// Markdown links: capture group 1 is the URL inside (...)
 	if subs := mdLinkRegex.FindAllStringSubmatchIndex(content, -1); len(subs) > 0 {
 		for _, idx := range subs {
 			if len(idx) >= 4 && idx[2] >= 0 && idx[3] >= 0 {
 				url := content[idx[2]:idx[3]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[2]})
+				appendUnique(url, idx[2])
 			}
 		}
 	}
@@ -669,10 +567,10 @@ func extractCandidateMatches(content string) []matchCandidate {
 			// groups 1 and 2 are alternatives
 			if len(idx) >= 4 && idx[2] >= 0 && idx[3] >= 0 {
 				url := content[idx[2]:idx[3]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[2]})
+				appendUnique(url, idx[2])
 			} else if len(idx) >= 6 && idx[4] >= 0 && idx[5] >= 0 {
 				url := content[idx[4]:idx[5]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[4]})
+				appendUnique(url, idx[4])
 			}
 		}
 	}
@@ -681,10 +579,10 @@ func extractCandidateMatches(content string) []matchCandidate {
 		for _, idx := range subs {
 			if len(idx) >= 4 && idx[2] >= 0 && idx[3] >= 0 {
 				url := content[idx[2]:idx[3]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[2]})
+				appendUnique(url, idx[2])
 			} else if len(idx) >= 6 && idx[4] >= 0 && idx[5] >= 0 {
 				url := content[idx[4]:idx[5]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[4]})
+				appendUnique(url, idx[4])
 			}
 		}
 	}
@@ -693,7 +591,7 @@ func extractCandidateMatches(content string) []matchCandidate {
 		for _, idx := range subs {
 			if len(idx) >= 4 && idx[2] >= 0 && idx[3] >= 0 {
 				url := content[idx[2]:idx[3]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[2]})
+				appendUnique(url, idx[2])
 			}
 		}
 	}
@@ -702,10 +600,10 @@ func extractCandidateMatches(content string) []matchCandidate {
 		for _, idx := range subs {
 			if len(idx) >= 4 && idx[2] >= 0 && idx[3] >= 0 {
 				url := content[idx[2]:idx[3]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[2]})
+				appendUnique(url, idx[2])
 			} else if len(idx) >= 6 && idx[4] >= 0 && idx[5] >= 0 {
 				url := content[idx[4]:idx[5]]
-				out = append(out, matchCandidate{URL: url, Offset: idx[4]})
+				appendUnique(url, idx[4])
 			}
 		}
 	}
@@ -713,7 +611,7 @@ func extractCandidateMatches(content string) []matchCandidate {
 	if spans := bareURLRegex.FindAllStringIndex(content, -1); len(spans) > 0 {
 		for _, sp := range spans {
 			url := content[sp[0]:sp[1]]
-			out = append(out, matchCandidate{URL: url, Offset: sp[0]})
+			appendUnique(url, sp[0])
 		}
 	}
 	return out
@@ -1093,29 +991,42 @@ func isURLIgnored(u string, patterns []string) bool {
 	if len(patterns) == 0 {
 		return false
 	}
+	// Precedence: exact/substring checks first, then wildcard matching.
+	// This keeps simple ignore entries fast and predictable.
 	for _, raw := range patterns {
 		p := strings.TrimSpace(raw)
 		if p == "" {
 			continue
 		}
-		// No wildcards: exact or substring match
-		if !strings.ContainsAny(p, "*?") {
-			if u == p || strings.Contains(u, p) {
-				return true
-			}
-			continue
-		}
-		// Glob-style: allow '*' to span slashes by converting '*' -> '**'
-		dsPat := strings.ReplaceAll(p, "*", "**")
-		if ok, _ := doublestar.PathMatch(dsPat, u); ok {
+		if isNonWildcardURLPatternMatch(u, p) {
 			return true
 		}
-		// Regex fallback: '*' -> '.*', '?' -> '.'
-		if re, err := wildcardToRegex(p); err == nil && re.MatchString(u) {
+		if isWildcardURLPatternMatch(u, p) {
 			return true
 		}
 	}
 	return false
+}
+
+func isNonWildcardURLPatternMatch(u, pattern string) bool {
+	if strings.ContainsAny(pattern, "*?") {
+		return false
+	}
+	return u == pattern || strings.Contains(u, pattern)
+}
+
+func isWildcardURLPatternMatch(u, pattern string) bool {
+	if !strings.ContainsAny(pattern, "*?") {
+		return false
+	}
+	// Glob-style: allow '*' to span slashes by converting '*' -> '**'.
+	dsPat := strings.ReplaceAll(pattern, "*", "**")
+	if ok, _ := doublestar.PathMatch(dsPat, u); ok {
+		return true
+	}
+	// Keep regex fallback for compatibility with historic pattern behavior.
+	re, err := wildcardToRegex(pattern)
+	return err == nil && re.MatchString(u)
 }
 
 func wildcardToRegex(pattern string) (*regexp.Regexp, error) {
