@@ -1,5 +1,5 @@
-name: "Slinky"
-description: "Slink through your repository looking for dead links"
+name: "Slinky - Guard against dead links"
+description: "Slink through your repository guarding against dead links"
 author: "LukasParke"
 branding:
   icon: "link"
